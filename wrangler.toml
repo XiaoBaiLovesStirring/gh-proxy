@@ -1,9 +1,4 @@
 name = "gh-proxy"
-main = "src/index.js"
+main = "worker.js"
 compatibility_date = "2025-01-01"
-
-# 部署后地址：https://gh-proxy.<你的子域>.workers.dev
-#
-# 两个 secret（不要写进本文件，用 wrangler secret put 注入）：
-#   GITHUB_TOKEN : 你的 GitHub PAT（只读权限就够）
-#   AUTH_TOKEN   : 访问口令，防止别人蹭你的 worker
+compatibility_flags = ["nodejs_compat"]
