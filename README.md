@@ -1,80 +1,93 @@
 # gh-proxy
 
-Cloudflare Worker 实现的 **GitHub 只读反代网关**。免费 `*.workers.dev` 域名即可，无需买域名。
+两个独立的 Cloudflare Worker，解决 GitHub 的两件事：
 
-> ⚠️ 这是 HTTP 反向代理，**不是 VPN / 代理节点**。Cloudflare 服务条款禁止把 Workers 当作网络代理使用，本项目仅中转 GitHub 的 HTTP 流量。
-
-## 路由
-
-| 路径 | 转发到 | 说明 |
+| 目录 | 作用 | Worker 名 |
 |---|---|---|
-| `/health` | — | 健康检查，返回 JSON |
-| `/raw/<owner>/<repo>/<ref>/<path>` | `raw.githubusercontent.com` | 带缓存 |
-| `/api/<endpoint>` | `api.github.com` | 自动注入 GITHUB_TOKEN |
-| `/gh/<path>` | `github.com` | 全透传，自动跟随 302 |
-| `/object/<path>` | `objects.githubusercontent.com` | Release 资产直达 |
+| `web/` | **打开 github.com 网页界面** | `gh-web` |
+| `dl/`  | **下载加速**：raw / Release / archive / git clone | `gh-dl` |
 
-## 用法
+每个目录都是独立可部署的 Worker（含 `wrangler.toml` + `worker.js`）。
+Cloudflare Dashboard 的「连接 Git 仓库」可以分别指向两个目录部署。
+
+---
+
+## GitHub 网页反代（web/）
+
+部署后：
+
+```
+https://你的域名/github.com/octocat/Hello-World
+https://你的域名/https://github.com/octocat/Hello-World
+```
+
+也可以：
+
+```
+https://你的域名/github.com/用户/仓库/issues
+https://你的域名/github.com/用户/仓库/pulls
+```
+
+**限制（先说清楚）：**
+- 只放行 GitHub 域名，不是开放代理。
+- **不能登录**：GitHub 的 cookie 域绑定 `github.com`，经反代后登录会崩，这是硬限制。
+- 私有仓库看不了。
+- 部分 JS 会加载失败（资源跨域），页面功能可能不完整。
+
+> 如果你只是想“不翻墙也能打开 GitHub 网页”，更省事且真正稳的方案是 **Cloudflare WARP**（1.1.1.1 客户端），不是 Worker。Worker 反代网页这条路天生残缺。
+
+## 下载加速（dl/）
+
+```
+# raw 文件
+https://你的域名/raw.githubusercontent.com/nvm-sh/nvm/master/install.sh
+
+# Release 下载
+https://你的域名/github.com/cli/cli/releases/download/v2.40.0/gh_2.40.0_linux_amd64.tar.gz
+
+# 源码包
+https://你的域名/github.com/octocat/Hello-World/archive/refs/heads/master.zip
+
+# GitHub API
+https://你的域名/api.github.com/repos/octocat/Hello-World
+
+# git clone（公开仓库，只读）
+git clone https://你的域名/https://github.com/torvalds/linux.git
+```
+
+---
+
+## 部署方式（二选一）
+
+### A. Dashboard 网页部署（手机可用）
+
+对 `web/worker.js` 和 `dl/worker.js` **各新建一个 Worker**，把文件内容粘进编辑器，部署即可。
+不需要 wrangler.toml，代码里没有任何依赖。
+
+### B. 连接 Git 仓库（推荐，自动构建）
+
+1. Fork 本仓库
+2. Workers & Pages → 创建 → 连接 Git 仓库 → 选 fork 后的仓库
+3. **根目录设为 `web`**，部署 → 得到 gh-web
+4. 再重复一次，**根目录设为 `dl`** → 得到 gh-dl
+
+### C. 本地 wrangler
 
 ```bash
-# raw
-curl "https://gh-proxy.xxx.workers.dev/raw/octocat/Hello-World/master/README"
-
-# API（服务端自动带 token）
-curl "https://gh-proxy.xxx.workers.dev/api/repos/octocat/Hello-World"
-
-# 网页透传
-curl -L "https://gh-proxy.xxx.workers.dev/gh/octocat/Hello-World"
-
-# Release 资产
-curl -L "https://gh-proxy.xxx.workers.dev/gh/cli/cli/releases/latest"
+cd web && npx wrangler deploy
+cd ../dl && npx wrangler deploy
 ```
 
-## 部署
-
-```bash
-cd gh-proxy
-npm install
-npx wrangler login
-npx wrangler deploy
-```
-
-## 注入密钥（务必做，别写进文件）
-
-```bash
-# 1. GitHub PAT：只勾 public_repo（或只读权限）
-npx wrangler secret put GITHUB_TOKEN
-
-# 2. 访问口令：随机串
-npx wrangler secret put AUTH_TOKEN
-```
-
-之后所有请求需带：
-
-```
-?token=<AUTH_TOKEN>
-```
-
-或 Header：
-
-```
-x-proxy-token: <AUTH_TOKEN>
-```
-
-## 测试
-
-```bash
-chmod +x test.sh
-./test.sh https://gh-proxy.xxx.workers.dev <AUTH_TOKEN>
-```
+---
 
 ## 限制
 
-- 免费版每天 10 万次请求。
-- 超大 Release 资产（数十 MB 以上）可能因 Worker 内存/时长限制失败。
-- `/api` 匿名限额 60 次/小时；配了 `GITHUB_TOKEN` 提升到 5000 次/小时。
-- 仅中转 HTTP 请求，不做隧道/VPN。
+- 免费版 10 万请求/天。
+- 单文件上限 100MB（Cloudflare 侧限制）。
+- `git clone` 只读，不支持 push、不支持 Git LFS。
+- 网页反代不支持登录。
 
-## 安全提醒
+## 安全
 
-**任何贴到聊天、截图、公开地方的 GitHub token 都视为已泄露，请立即 Revoke 并重新生成。**
+- 不要把 GitHub token 写进任何文件，用 `wrangler secret put`。
+- 反代只允许 GitHub 域名，避免被人拿去做开放代理（这也是 Cloudflare 条款的要求）。
